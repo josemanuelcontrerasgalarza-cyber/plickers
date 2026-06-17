@@ -24,6 +24,7 @@ export const LOGIN = {
   EMAIL_INPUT:    'input[name="email"], input[type="email"], #email',
   PASSWORD_INPUT: 'input[name="password"], input[type="password"], #password',
   SUBMIT_BUTTON:  'button[type="submit"], button:has-text("Log in"), button:has-text("Sign in")',
+  GOOGLE_BUTTON:  'button:has-text("Google"), a:has-text("Google"), [class*="google"], [class*="Google"]',
   ERROR_MESSAGE:  '[class*="error"], [class*="Error"], .alert, [role="alert"]',
   SUCCESS_INDICATOR: '[class*="dashboard"], [class*="home"], nav[class*="main"], .classes-list',
 };

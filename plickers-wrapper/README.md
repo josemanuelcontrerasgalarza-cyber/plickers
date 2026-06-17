@@ -101,16 +101,54 @@ cp .env.example .env
 | Variable            | Descripción                                              | Default       |
 | ------------------- | -------------------------------------------------------- | ------------- |
 | `PLICKERS_EMAIL`    | Email de tu cuenta Plickers                              | —             |
-| `PLICKERS_PASSWORD` | Password de tu cuenta Plickers                           | —             |
+| `PLICKERS_PASSWORD` | Password (déjalo **vacío** si entras con Google, ver abajo) | —          |
 | `PLICKERS_CLASS_ID` | ID de clase por defecto (opcional si lo pasas en la URL) | —             |
 | `PORT`              | Puerto del servidor HTTP                                 | `3000`        |
 | `NODE_ENV`          | `development` \| `production`                            | `development` |
 | `API_SECRET_KEY`    | Clave para proteger `/sync` (header `X-API-Key`)         | —             |
 | `HEADLESS`          | `true` \| `false` (ver el browser para depurar)          | `true`        |
 | `SCRAPER_TIMEOUT`   | Timeout de carga de página, en ms                        | `30000`       |
+| `PLICKERS_SESSION_PATH` | Ruta del archivo de sesión guardada                 | `./plickers.session.json` |
 
 > Si `API_SECRET_KEY` está vacío, el endpoint `/sync` queda **sin** protección
 > de API key (útil solo para desarrollo local).
+
+---
+
+## 🔐 Autenticación con Google / SSO
+
+Si tu cuenta de Plickers se creó con **"Iniciar sesión con Google"** (u otro
+SSO), **no** hay un password que el scraper pueda automatizar — y Google
+**bloquea** activamente el login automatizado en navegadores headless. La
+solución es iniciar sesión **una sola vez** de forma manual y guardar la sesión:
+
+```bash
+# Córrelo en tu máquina LOCAL (necesita interfaz gráfica / display)
+npm run login
+```
+
+1. Se abre una ventana de Chromium **visible**.
+2. Haz clic en **"Iniciar sesión con Google"** y completa el flujo (incluido 2FA).
+3. Cuando veas tu panel de Plickers, vuelve a la terminal y pulsa **ENTER**.
+4. Se guarda la sesión en `plickers.session.json` (cookies + localStorage).
+
+A partir de ahí, el scraper carga esa sesión automáticamente (`storageState`) y
+**omite el login**. La sesión se refresca en cada corrida exitosa. Cuando expire
+(Plickers vuelve a pedir login), simplemente repite `npm run login`.
+
+| | Cuenta con Google / SSO | Cuenta email + password |
+|---|---|---|
+| `.env` | `PLICKERS_PASSWORD` vacío | `PLICKERS_EMAIL` + `PLICKERS_PASSWORD` |
+| Login | `npm run login` (una vez) | automático en cada sync |
+| Sesión | `plickers.session.json` (obligatoria) | se cachea como bonus |
+
+> 🔒 `plickers.session.json` contiene tokens de sesión válidos: está en
+> `.gitignore` (`*.session.json`) y **nunca** debe commitearse ni compartirse.
+> Es tan sensible como tu password.
+>
+> 💡 Alternativa sin sesión: si Plickers te permite **establecer un password**
+> en los ajustes de tu cuenta (aun habiéndola creado con Google), puedes usar el
+> login clásico email + password rellenando `PLICKERS_PASSWORD` en el `.env`.
 
 ---
 

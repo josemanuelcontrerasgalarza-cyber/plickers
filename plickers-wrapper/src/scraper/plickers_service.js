@@ -3,7 +3,8 @@
 //
 // ESTRATEGIA HÍBRIDA:
 // 1. Playwright lanza Chromium headless
-// 2. Autentica con credenciales del .env
+// 2. Autentica vía sesión guardada (storageState, para cuentas Google/SSO)
+//    o, si no hay sesión, con email+password del .env
 // 3. Intercepta API interna JSON de Plickers (primaria)
 // 4. Fallback a scraping DOM si la API cambia
 
@@ -17,6 +18,19 @@ import {
   PlickersDataParseError,
 } from '../utils/errors.js';
 import { URLS, LOGIN, REPORTS, TIMEOUTS } from './selectors.js';
+import { existsSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Ruta del archivo de sesión persistida (cookies + localStorage).
+// Se usa para cuentas con "Iniciar sesión con Google" / SSO — donde no hay
+// password que automatizar — y para acelerar corridas subsecuentes.
+// Coincide con el patrón *.session.json del .gitignore (nunca se commitea).
+export const SESSION_PATH =
+  process.env.PLICKERS_SESSION_PATH ||
+  path.join(__dirname, '../../plickers.session.json');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -39,12 +53,32 @@ async function authenticate(page) {
   await page.goto(URLS.LOGIN, { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.PAGE_LOAD });
   await waitForNetworkIdle(page);
 
-  const alreadyLoggedIn = await page.$(LOGIN.SUCCESS_INDICATOR).catch(() => null);
-  if (alreadyLoggedIn) {
+  // 1) ¿Sesión restaurada desde storageState? Plickers redirige fuera de /login
+  //    a los usuarios ya autenticados.
+  if (!page.url().includes('/login')) {
+    logger.info('✓ Sesión restaurada (storageState), login omitido');
+    return;
+  }
+  const successEl = await page.$(LOGIN.SUCCESS_INDICATOR).catch(() => null);
+  const emailEl = await page.$(LOGIN.EMAIL_INPUT).catch(() => null);
+  if (successEl || !emailEl) {
     logger.info('✓ Sesión ya activa, saltando login');
     return;
   }
 
+  // 2) Hay formulario de login pero no hay password configurado: la cuenta usa
+  //    "Iniciar sesión con Google" / SSO. NO automatizamos ese flujo (Google lo
+  //    bloquea por seguridad); pedimos correr el login interactivo una vez.
+  if (!process.env.PLICKERS_PASSWORD) {
+    throw new PlickersAuthError(
+      'No hay sesión guardada y no hay PLICKERS_PASSWORD. Si tu cuenta usa ' +
+        '"Iniciar sesión con Google", ejecuta `npm run login` una vez para ' +
+        'autenticarte manualmente y guardar la sesión.',
+      { hint: 'Ejecuta: npm run login' }
+    );
+  }
+
+  // 3) Login clásico email + password.
   await waitForSelector(page, LOGIN.EMAIL_INPUT, 'email_input');
   await page.fill(LOGIN.EMAIL_INPUT, process.env.PLICKERS_EMAIL);
   await sleep(TIMEOUTS.BETWEEN_ACTIONS);
@@ -172,8 +206,12 @@ async function scrapeReportsDOM(page, classId) {
 }
 
 export async function extractPlickersData(classId = process.env.PLICKERS_CLASS_ID) {
-  if (!process.env.PLICKERS_EMAIL || !process.env.PLICKERS_PASSWORD) {
-    throw new PlickersAuthError('Faltan PLICKERS_EMAIL o PLICKERS_PASSWORD en el .env');
+  const hasSession = existsSync(SESSION_PATH);
+  if (!hasSession && (!process.env.PLICKERS_EMAIL || !process.env.PLICKERS_PASSWORD)) {
+    throw new PlickersAuthError(
+      'Sin sesión guardada y sin credenciales. Ejecuta `npm run login` ' +
+        '(cuentas con Google/SSO) o define PLICKERS_EMAIL y PLICKERS_PASSWORD en el .env.'
+    );
   }
   if (!classId) {
     throw new PlickersClassNotFoundError('No se especificó PLICKERS_CLASS_ID');
@@ -191,17 +229,29 @@ export async function extractPlickersData(classId = process.env.PLICKERS_CLASS_I
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
     });
 
-    const context = await browser.newContext({
+    const contextOptions = {
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       viewport: { width: 1280, height: 800 },
       locale: 'es-CO',
-    });
+    };
+    if (hasSession) {
+      contextOptions.storageState = SESSION_PATH;
+      logger.info('→ Cargando sesión guardada (storageState)');
+    }
+    const context = await browser.newContext(contextOptions);
 
     const page = await context.newPage();
     page.setDefaultTimeout(TIMEOUTS.PAGE_LOAD);
 
     await interceptAPIData(page, classId);
     await authenticate(page);
+
+    // Refresca/persiste la sesión para acelerar próximas corridas y mantener
+    // vivas las cookies (también beneficia al login clásico email+password).
+    await context
+      .storageState({ path: SESSION_PATH })
+      .then(() => logger.debug('Sesión persistida en disco'))
+      .catch(() => {});
 
     logger.info(`→ Navegando a la clase: ${URLS.CLASS(classId)}`);
     await page.goto(URLS.CLASS(classId), { waitUntil: 'domcontentloaded', timeout: TIMEOUTS.PAGE_LOAD });
